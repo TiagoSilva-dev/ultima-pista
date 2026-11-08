@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   answerQuestion,
+  askQuestion,
   confirmSpoken,
   confirmTheory,
   continueTheory,
@@ -10,17 +11,24 @@ import {
   idemKey,
   listCases,
   oralQuestion,
-  askQuestion,
   proposeTheory,
   returnLobby,
   startRound,
 } from '../api'
-import { AnswerBadge } from '../components/AnswerBadge'
 import { CaseCard } from '../components/CaseCard'
-import { ConnectionBar } from '../components/ConnectionBar'
-import { History } from '../components/History'
+import { ArrowIcon, LockIcon } from '../components/Icons'
+import { Participants } from '../components/Participants'
+import { QuestionList } from '../components/QuestionList'
+import { RoomHeader } from '../components/RoomHeader'
+import { Sheet } from '../components/Sheet'
 import { useRoom } from '../hooks/useRoom'
 import type { CasePublic, PrivatePayload, Question, RoomSnapshot, Theory } from '../types'
+
+const ANSWERS = [
+  { value: 'sim', label: 'Sim', className: 'ans-sim' },
+  { value: 'nao', label: 'Não', className: 'ans-nao' },
+  { value: 'irrelevante', label: 'Irrelevante', className: 'ans-irrel' },
+] as const
 
 export function RoomPage() {
   const { code = '' } = useParams()
@@ -32,11 +40,6 @@ export function RoomPage() {
   const [question, setQuestion] = useState('')
   const [theoryOpen, setTheoryOpen] = useState(false)
   const [theoryText, setTheoryText] = useState('')
-  const [oralText, setOralText] = useState('')
-  const [oralAnswer, setOralAnswer] = useState('sim')
-  const [guidance, setGuidance] = useState('')
-  const [confirmOpen, setConfirmOpen] = useState(false)
-  const [spokenSummary, setSpokenSummary] = useState('')
   const [msg, setMsg] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
 
@@ -76,6 +79,12 @@ export function RoomPage() {
     }
   }, [isNarrator, inRound, resolved, code, room?.round?.id])
 
+  useEffect(() => {
+    if (!msg) return
+    const t = window.setTimeout(() => setMsg(null), 3500)
+    return () => window.clearTimeout(t)
+  }, [msg])
+
   async function copyInvite() {
     const url = `${window.location.origin}/entrar/${code}`
     try {
@@ -87,126 +96,131 @@ export function RoomPage() {
     }
   }
 
-  async function onStart(caseId: string) {
+  async function run(action: () => Promise<unknown>, fallback: string) {
     setSending(true)
     setMsg(null)
     try {
-      const snap = await startRound(code, caseId)
-      setRoom(snap)
+      await action()
+      return true
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : 'Falha ao iniciar')
+      setMsg(e instanceof Error ? e.message : fallback)
+      return false
     } finally {
       setSending(false)
     }
+  }
+
+  async function onStart(caseId: string) {
+    await run(async () => setRoom(await startRound(code, caseId)), 'Falha ao iniciar')
   }
 
   async function onAsk(e: FormEvent) {
     e.preventDefault()
-    const text = question
-    const key = idemKey()
-    setSending(true)
-    setMsg(null)
-    try {
-      await askQuestion(code, text, key)
+    const text = question.trim()
+    if (!text) return
+    const ok = await run(async () => {
+      await askQuestion(code, text, idemKey())
       setQuestion('')
-      setMsg('Pergunta enviada.')
       await refresh('ask')
-    } catch (err) {
-      setQuestion(text)
-      setMsg(err instanceof Error ? err.message : 'Falha no envio')
-    } finally {
-      setSending(false)
-    }
+    }, 'Falha no envio')
+    if (ok) setMsg('Pergunta enviada ao narrador.')
   }
 
   async function onTheory(e: FormEvent) {
     e.preventDefault()
-    const text = theoryText
-    const key = idemKey()
-    setSending(true)
-    try {
-      await proposeTheory(code, text, key)
+    const text = theoryText.trim()
+    if (!text) return
+    const ok = await run(async () => {
+      await proposeTheory(code, text, idemKey())
       setTheoryText('')
       setTheoryOpen(false)
-      setMsg('Teoria enviada ao narrador.')
       await refresh('theory')
-    } catch (err) {
-      setTheoryText(text)
-      setMsg(err instanceof Error ? err.message : 'Falha ao enviar teoria')
-    } finally {
-      setSending(false)
-    }
+    }, 'Falha ao enviar teoria')
+    if (ok) setMsg('Teoria enviada ao narrador.')
   }
 
-  if (!room && !error) {
+  if (!room) {
     return (
-      <main className="page">
-        <ConnectionBar connection={connection} code={code} />
-        <p className="loading">Abrindo a sala…</p>
-      </main>
+      <Sheet header={<RoomHeader code={code} connection={connection} />} className="sheet-narrow">
+        {error ? (
+          <div className="notice">
+            <h1 className="notice-title">Sala indisponível</h1>
+            <p>{error}</p>
+            <Link className="btn btn-primary" to="/">
+              Voltar ao início
+            </Link>
+          </div>
+        ) : (
+          <p className="loading">Abrindo a sala…</p>
+        )}
+      </Sheet>
     )
   }
-
-  if (error && !room) {
-    return (
-      <main className="page">
-        <ConnectionBar connection={connection} />
-        <div className="panel">
-          <h1>Sala indisponível</h1>
-          <p>{error}</p>
-          <Link className="btn btn-primary" to="/">
-            Voltar ao início
-          </Link>
-        </div>
-      </main>
-    )
-  }
-
-  if (!room) return null
 
   if (!room.you) {
     return (
-      <main className="page">
-        <ConnectionBar connection={connection} code={room.code} />
-        <div className="panel">
-          <h1>Entre na sala</h1>
+      <Sheet header={<RoomHeader code={room.code} connection={connection} />} className="sheet-narrow">
+        <div className="notice">
+          <h1 className="notice-title">Entre na sala</h1>
           <p>Esta sessão ainda não está na sala {room.code}.</p>
           <Link className="btn btn-primary" to={`/entrar/${room.code}`}>
             Escolher apelido
           </Link>
         </div>
-      </main>
+      </Sheet>
     )
   }
 
-  return (
-    <main className={`page room-page ${isNarrator ? 'narrator' : 'detective'}`}>
-      <ConnectionBar
-        connection={connection}
-        code={room.code}
-        role={isNarrator ? 'Narrador' : 'Detetive'}
-      />
+  const header = (
+    <RoomHeader
+      code={room.code}
+      role={isNarrator ? 'Narrador' : 'Detetive'}
+      connection={connection}
+      onCopy={copyInvite}
+      copied={copied}
+    />
+  )
 
-      {!inRound ? (
-        <LobbyView
-          room={room}
-          cases={cases}
-          isNarrator={isNarrator}
-          copied={copied}
-          onCopy={copyInvite}
-          onStart={onStart}
-          sending={sending}
-        />
-      ) : resolved ? (
+  const toast = (
+    <>
+      {msg ? (
+        <p className="toast" role="status">
+          {msg}
+        </p>
+      ) : null}
+      {error ? (
+        <p className="toast toast-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </>
+  )
+
+  if (!inRound) {
+    return (
+      <Sheet header={header}>
+        <LobbyView room={room} cases={cases} isNarrator={isNarrator} onStart={onStart} sending={sending} />
+        {toast}
+      </Sheet>
+    )
+  }
+
+  if (resolved) {
+    return (
+      <Sheet header={header}>
         <ResolvedView
           room={room}
           isNarrator={isNarrator}
-          onLobby={async () => {
-            const snap = await returnLobby(code)
-            setRoom(snap)
-          }}
+          onLobby={() => run(async () => setRoom(await returnLobby(code)), 'Falha ao voltar ao lobby')}
         />
-      ) : isNarrator ? (
+        {toast}
+      </Sheet>
+    )
+  }
+
+  if (isNarrator) {
+    return (
+      <Sheet header={header} className="sheet-narrator">
         <NarratorView
           room={room}
           priv={priv}
@@ -214,25 +228,23 @@ export function RoomPage() {
           setShowSolution={setShowSolution}
           pendingQ={pendingQ}
           pendingT={pendingT}
-          oralText={oralText}
-          setOralText={setOralText}
-          oralAnswer={oralAnswer}
-          setOralAnswer={setOralAnswer}
-          guidance={guidance}
-          setGuidance={setGuidance}
-          confirmOpen={confirmOpen}
-          setConfirmOpen={setConfirmOpen}
-          spokenSummary={spokenSummary}
-          setSpokenSummary={setSpokenSummary}
           sending={sending}
-          setSending={setSending}
-          setMsg={setMsg}
+          run={run}
           code={code}
           refresh={refresh}
         />
-      ) : (
-        <DetectiveView
-          room={room}
+        {toast}
+      </Sheet>
+    )
+  }
+
+  const round = room.round!
+  return (
+    <Sheet
+      header={header}
+      className="sheet-detective"
+      footer={
+        <Composer
           question={question}
           setQuestion={setQuestion}
           onAsk={onAsk}
@@ -242,18 +254,21 @@ export function RoomPage() {
           setTheoryText={setTheoryText}
           onTheory={onTheory}
           sending={sending}
-          onCopy={copyInvite}
-          copied={copied}
         />
-      )}
-
-      {msg ? (
-        <p className="toast" role="status">
-          {msg}
-        </p>
-      ) : null}
-      {error ? <p className="error-banner">{error}</p> : null}
-    </main>
+      }
+    >
+      <div className="room-grid">
+        <div className="room-case">{round.case ? <CaseCard c={round.case} /> : null}</div>
+        <section className="room-side" aria-labelledby="perguntas-title">
+          <h2 id="perguntas-title" className="side-title">
+            Perguntas da sala
+          </h2>
+          <QuestionList questions={round.questions} theories={round.theories} />
+          <Participants people={room.participants} className="room-people" />
+        </section>
+      </div>
+      {toast}
+    </Sheet>
   )
 }
 
@@ -261,92 +276,73 @@ function LobbyView({
   room,
   cases,
   isNarrator,
-  copied,
-  onCopy,
   onStart,
   sending,
 }: {
   room: RoomSnapshot
   cases: CasePublic[]
   isNarrator: boolean
-  copied: boolean
-  onCopy: () => void
   onStart: (id: string) => void
   sending: boolean
 }) {
   return (
     <div className="lobby">
-      <header className="lobby-head">
-        <h1 className="brand-title sm">Última Pista</h1>
-        <p className="lede">Modo {room.mode}. Compartilhe o convite e comece quando quiser.</p>
-        <div className="invite-row">
-          <span className="room-code-lg">{room.code}</span>
-          <button type="button" className="btn btn-secondary" onClick={onCopy}>
-            {copied ? 'Convite copiado' : 'Copiar convite'}
-          </button>
-          <a className="btn btn-ghost" href={`/telao/${room.code}`} target="_blank" rel="noreferrer">
-            Abrir telão
-          </a>
-        </div>
-      </header>
+      <section className="lobby-invite">
+        <span className="tag">Convite</span>
+        <p className="lobby-code">{room.code}</p>
+        <p className="lobby-lede">
+          Modo {room.mode === 'presencial' ? 'presencial' : 'à distância'}. Compartilhe o convite e comece quando
+          quiser.
+        </p>
+        <a className="btn btn-outline" href={`/telao/${room.code}`} target="_blank" rel="noreferrer">
+          Abrir telão
+        </a>
 
-      <section className="panel">
-        <h2>Participantes</h2>
+        <h2 className="side-title sm">Na sala</h2>
         {room.participants.length === 0 ? (
           <p className="empty">Lobby vazio.</p>
         ) : (
-          <ul className="people">
-            {room.participants.map((p) => (
-              <li key={p.id}>
-                <span className="avatar" aria-hidden="true">
-                  {p.nickname.slice(0, 1).toUpperCase()}
-                </span>
-                {p.nickname}
-                <span className="muted">{p.role}</span>
-              </li>
-            ))}
-          </ul>
+          <Participants people={room.participants} showRole className="stacked" />
         )}
-        {room.mode === 'presencial' ? (
-          <p className="hint">No presencial, você pode iniciar só com o narrador conectado.</p>
-        ) : (
-          <p className="hint">À distância, convide pelo menos um detetive pelo link.</p>
-        )}
+        <p className="hint">
+          {room.mode === 'presencial'
+            ? 'No presencial, você pode iniciar só com o narrador conectado.'
+            : 'À distância, convide pelo menos um detetive pelo link.'}
+        </p>
       </section>
 
-      {isNarrator ? (
-        <section className="panel">
-          <h2>Escolher caso</h2>
-          <ul className="case-list">
-            {cases.map((c) => (
-              <li key={c.id}>
-                <div>
-                  <strong>{c.title}</strong>
-                  <p>
-                    {c.theme} · {c.difficulty}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={sending}
-                  onClick={() => onStart(c.id)}
-                >
-                  Iniciar
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : (
-        <p className="waiting">Aguardando o narrador escolher o caso…</p>
-      )}
+      <section className="lobby-cases">
+        {isNarrator ? (
+          <>
+            <h2 className="side-title">Escolha o caso</h2>
+            <ul className="case-list">
+              {cases.map((c) => (
+                <li key={c.id}>
+                  <div>
+                    <strong>{c.title}</strong>
+                    <p className="case-list-meta">
+                      {c.theme} · {c.difficulty}
+                    </p>
+                  </div>
+                  <button type="button" className="btn btn-primary" disabled={sending} onClick={() => onStart(c.id)}>
+                    Iniciar
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : (
+          <div className="waiting">
+            <span className="tag">Aguarde</span>
+            <p>O narrador está escolhendo o caso…</p>
+          </div>
+        )}
+      </section>
     </div>
   )
 }
 
-function DetectiveView({
-  room,
+function Composer({
   question,
   setQuestion,
   onAsk,
@@ -356,10 +352,7 @@ function DetectiveView({
   setTheoryText,
   onTheory,
   sending,
-  onCopy,
-  copied,
 }: {
-  room: RoomSnapshot
   question: string
   setQuestion: (v: string) => void
   onAsk: (e: FormEvent) => void
@@ -369,74 +362,58 @@ function DetectiveView({
   setTheoryText: (v: string) => void
   onTheory: (e: FormEvent) => void
   sending: boolean
-  onCopy: () => void
-  copied: boolean
 }) {
-  const round = room.round!
-  return (
-    <div className="play detective-play">
-      <div className="play-main">
-        <div className="invite-row compact">
-          <span className="room-code">Sala {room.code}</span>
-          <button type="button" className="btn btn-ghost" onClick={onCopy}>
-            {copied ? 'Copiado' : 'Copiar convite'}
+  if (theoryOpen) {
+    return (
+      <form className="composer composer-theory" onSubmit={onTheory}>
+        <label className="sr-only" htmlFor="theory">
+          Teoria
+        </label>
+        <textarea
+          id="theory"
+          value={theoryText}
+          onChange={(e) => setTheoryText(e.target.value)}
+          maxLength={2000}
+          required
+          autoFocus
+          placeholder="Explique a sequência completa…"
+          rows={3}
+        />
+        <div className="composer-actions">
+          <button type="button" className="btn btn-ghost" onClick={() => setTheoryOpen(false)}>
+            Cancelar
+          </button>
+          <button className="btn btn-primary" disabled={sending || !theoryText.trim()}>
+            Enviar teoria
           </button>
         </div>
-        {round.case ? <CaseCard c={round.case} /> : null}
-        <section>
-          <h2 className="section-title">Perguntas da sala</h2>
-          <History questions={round.questions} theories={round.theories} />
-        </section>
-      </div>
+      </form>
+    )
+  }
 
-      <div className="composer-dock">
-        {theoryOpen ? (
-          <form className="composer theory-composer" onSubmit={onTheory}>
-            <label className="sr-only" htmlFor="theory">
-              Teoria
-            </label>
-            <textarea
-              id="theory"
-              value={theoryText}
-              onChange={(e) => setTheoryText(e.target.value)}
-              maxLength={2000}
-              required
-              placeholder="Explique a sequência completa…"
-              rows={3}
-            />
-            <div className="composer-actions">
-              <button type="button" className="btn btn-ghost" onClick={() => setTheoryOpen(false)}>
-                Cancelar
-              </button>
-              <button className="btn btn-primary" disabled={sending || !theoryText.trim()}>
-                Enviar teoria
-              </button>
-            </div>
-          </form>
-        ) : (
-          <form className="composer" onSubmit={onAsk}>
-            <label className="sr-only" htmlFor="q">
-              Pergunta
-            </label>
-            <input
-              id="q"
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              maxLength={280}
-              required
-              placeholder="Faça uma pergunta…"
-              enterKeyHint="send"
-            />
-            <button className="btn btn-icon" aria-label="Enviar pergunta" disabled={sending || !question.trim()}>
-              →
-            </button>
-            <button type="button" className="btn btn-primary" onClick={() => setTheoryOpen(true)}>
-              Propor teoria
-            </button>
-          </form>
-        )}
-      </div>
-    </div>
+  return (
+    <form className="composer" onSubmit={onAsk}>
+      <label className="sr-only" htmlFor="q">
+        Pergunta
+      </label>
+      <input
+        id="q"
+        value={question}
+        onChange={(e) => setQuestion(e.target.value)}
+        maxLength={280}
+        required
+        placeholder="Faça uma pergunta..."
+        enterKeyHint="send"
+        autoComplete="off"
+      />
+      <button className="btn btn-send" aria-label="Enviar pergunta" disabled={sending || !question.trim()}>
+        <ArrowIcon className="icon" />
+      </button>
+      <span className="composer-divider" aria-hidden="true" />
+      <button type="button" className="btn btn-outline btn-theory" onClick={() => setTheoryOpen(true)}>
+        Propor teoria
+      </button>
+    </form>
   )
 }
 
@@ -447,19 +424,8 @@ function NarratorView({
   setShowSolution,
   pendingQ,
   pendingT,
-  oralText,
-  setOralText,
-  oralAnswer,
-  setOralAnswer,
-  guidance,
-  setGuidance,
-  confirmOpen,
-  setConfirmOpen,
-  spokenSummary,
-  setSpokenSummary,
   sending,
-  setSending,
-  setMsg,
+  run,
   code,
   refresh,
 }: {
@@ -469,201 +435,143 @@ function NarratorView({
   setShowSolution: (v: boolean) => void
   pendingQ: Question[]
   pendingT: Theory[]
-  oralText: string
-  setOralText: (v: string) => void
-  oralAnswer: string
-  setOralAnswer: (v: string) => void
-  guidance: string
-  setGuidance: (v: string) => void
-  confirmOpen: boolean
-  setConfirmOpen: (v: boolean) => void
-  spokenSummary: string
-  setSpokenSummary: (v: string) => void
   sending: boolean
-  setSending: (v: boolean) => void
-  setMsg: (v: string | null) => void
+  run: (action: () => Promise<unknown>, fallback: string) => Promise<boolean>
   code: string
   refresh: (reason?: string) => Promise<void>
 }) {
   const round = room.round!
   const current = pendingQ[0]
-
-  async function answer(id: string, answer: string) {
-    setSending(true)
-    try {
-      await answerQuestion(code, id, answer)
-      await refresh()
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : 'Falha ao responder')
-    } finally {
-      setSending(false)
-    }
-  }
+  const [guidance, setGuidance] = useState<Record<string, string>>({})
+  const [oralText, setOralText] = useState('')
+  const [oralAnswer, setOralAnswer] = useState<string>('sim')
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [spokenSummary, setSpokenSummary] = useState('')
 
   return (
-    <div className="play narrator-play">
-      {round.case ? <CaseCard c={round.case} /> : null}
-
-      <section className="secret-panel">
-        <div className="secret-head">
-          <span aria-hidden="true">🔒</span>
-          <h2>Solução em segredo</h2>
-        </div>
-        {showSolution && priv ? (
-          <div className="secret-body">
-            <p>{priv.solution}</p>
-            <h3>Fatos essenciais</h3>
-            <ul>
-              {priv.essentials.map((e) => (
-                <li key={e}>{e}</li>
-              ))}
-            </ul>
-            <h3>Orientações</h3>
-            <ul>
-              {priv.hints.map((e) => (
-                <li key={e}>{e}</li>
-              ))}
-            </ul>
-          </div>
-        ) : (
-          <button type="button" className="btn btn-secondary" onClick={() => setShowSolution(true)}>
-            Ver solução
-          </button>
-        )}
-      </section>
-
-      <section className="panel current-q">
-        <h2>{current ? `Pergunta de ${current.askerNickname}` : 'Fila de perguntas'}</h2>
-        {current ? (
-          <>
-            <p className="big-q">{current.text}</p>
-            <div className="answer-grid">
-              <button type="button" className="btn ans sim" disabled={sending} onClick={() => answer(current.id, 'sim')}>
-                ● Sim
+    <div className="narrator-grid">
+      <div className="narrator-controls">
+        <section className="secret" aria-labelledby="secret-title">
+          <LockIcon className="secret-lock" />
+          <h2 id="secret-title" className="secret-title">
+            Solução em segredo
+          </h2>
+          <p className="secret-sub">Só você pode ver</p>
+          {showSolution && priv ? (
+            <div className="secret-body">
+              <p>{priv.solution}</p>
+              <h3>Fatos essenciais</h3>
+              <ul>
+                {priv.essentials.map((e) => (
+                  <li key={e}>{e}</li>
+                ))}
+              </ul>
+              <h3>Orientações</h3>
+              <ul>
+                {priv.hints.map((e) => (
+                  <li key={e}>{e}</li>
+                ))}
+              </ul>
+              <button type="button" className="btn btn-cream" onClick={() => setShowSolution(false)}>
+                Ocultar solução
               </button>
-              <button type="button" className="btn ans nao" disabled={sending} onClick={() => answer(current.id, 'nao')}>
-                ■ Não
+            </div>
+          ) : (
+            <button type="button" className="btn btn-cream" disabled={!priv} onClick={() => setShowSolution(true)}>
+              Ver solução
+            </button>
+          )}
+        </section>
+
+        <hr className="rule" />
+
+        <section className="current-q" aria-live="polite">
+          {current ? (
+            <>
+              <span className="tag">Pergunta de {current.askerNickname}</span>
+              <p className="big-q">{current.text}</p>
+              <div className="answer-stack">
+                {ANSWERS.map((a) => (
+                  <button
+                    key={a.value}
+                    type="button"
+                    className={`btn btn-answer ${a.className}`}
+                    disabled={sending}
+                    onClick={() =>
+                      run(async () => {
+                        await answerQuestion(code, current.id, a.value)
+                        await refresh()
+                      }, 'Falha ao responder')
+                    }
+                  >
+                    {a.label}
+                  </button>
+                ))}
+              </div>
+              {pendingQ.length > 1 ? <p className="hint">+{pendingQ.length - 1} na fila</p> : null}
+            </>
+          ) : (
+            <>
+              <span className="tag">Fila de perguntas</span>
+              <p className="empty">Fila vazia. Aguarde perguntas ou registre uma oral.</p>
+            </>
+          )}
+        </section>
+
+        {pendingT.map((t) => (
+          <section key={t.id} className="theory-card">
+            <span className="tag">Teoria de {t.authorNickname}</span>
+            <p className="theory-text">{t.text}</p>
+            <label className="field">
+              Orientação (opcional)
+              <input
+                value={guidance[t.id] ?? ''}
+                onChange={(e) => setGuidance((g) => ({ ...g, [t.id]: e.target.value }))}
+                maxLength={280}
+              />
+            </label>
+            <div className="row-actions">
+              <button
+                type="button"
+                className="btn btn-outline"
+                disabled={sending}
+                onClick={() =>
+                  run(async () => {
+                    await continueTheory(code, t.id, guidance[t.id] ?? '')
+                    setGuidance((g) => ({ ...g, [t.id]: '' }))
+                    await refresh()
+                  }, 'Erro ao responder teoria')
+                }
+              >
+                Continuar investigação
               </button>
               <button
                 type="button"
-                className="btn ans irrel"
+                className="btn btn-primary"
                 disabled={sending}
-                onClick={() => answer(current.id, 'irrelevante')}
+                onClick={() =>
+                  run(async () => {
+                    await confirmTheory(code, t.id)
+                    await refresh()
+                  }, 'Erro ao aceitar teoria')
+                }
               >
-                ▲ Irrelevante
+                Aceitar e revelar
               </button>
             </div>
-            {pendingQ.length > 1 ? <p className="hint">+{pendingQ.length - 1} na fila</p> : null}
-          </>
-        ) : (
-          <p className="empty">Fila vazia. Aguarde perguntas ou registre uma oral.</p>
-        )}
-      </section>
+          </section>
+        ))}
 
-      {pendingT.map((t) => (
-        <section key={t.id} className="panel">
-          <h2>Teoria de {t.authorNickname}</h2>
-          <p>{t.text}</p>
-          <label>
-            Orientação (opcional)
-            <input value={guidance} onChange={(e) => setGuidance(e.target.value)} maxLength={280} />
-          </label>
-          <div className="row-actions">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={sending}
-              onClick={async () => {
-                setSending(true)
-                try {
-                  await continueTheory(code, t.id, guidance)
-                  setGuidance('')
-                  await refresh()
-                } catch (e) {
-                  setMsg(e instanceof Error ? e.message : 'Erro')
-                } finally {
-                  setSending(false)
-                }
-              }}
-            >
-              Continuar investigação
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={sending}
-              onClick={async () => {
-                setSending(true)
-                try {
-                  await confirmTheory(code, t.id)
-                  await refresh()
-                } catch (e) {
-                  setMsg(e instanceof Error ? e.message : 'Erro')
-                } finally {
-                  setSending(false)
-                }
-              }}
-            >
-              Aceitar e revelar
-            </button>
-          </div>
-        </section>
-      ))}
+        <hr className="rule" />
 
-      <section className="panel">
-        <h2>Registrar pergunta oral</h2>
-        <p className="hint">
-          {room.mode === 'presencial'
-            ? 'Opcional — a conversa pode seguir só na voz.'
-            : 'Também útil se alguém perguntar fora do app.'}
-        </p>
-        <label>
-          Resumo
-          <input value={oralText} onChange={(e) => setOralText(e.target.value)} maxLength={280} />
-        </label>
-        <div className="answer-grid compact">
-          {(['sim', 'nao', 'irrelevante'] as const).map((a) => (
-            <button
-              key={a}
-              type="button"
-              className={`btn ans ${a === 'nao' ? 'nao' : a === 'sim' ? 'sim' : 'irrel'} ${oralAnswer === a ? 'selected' : ''}`}
-              onClick={() => setOralAnswer(a)}
-            >
-              <AnswerBadge answer={a} />
-            </button>
-          ))}
-        </div>
-        <button
-          type="button"
-          className="btn btn-secondary"
-          disabled={sending || !oralText.trim()}
-          onClick={async () => {
-            setSending(true)
-            try {
-              await oralQuestion(code, oralText, oralAnswer, idemKey())
-              setOralText('')
-              await refresh()
-            } catch (e) {
-              setMsg(e instanceof Error ? e.message : 'Erro')
-            } finally {
-              setSending(false)
-            }
-          }}
-        >
-          Publicar com resposta
-        </button>
-      </section>
-
-      <section className="panel danger-zone">
-        <h2>Encerrar</h2>
         {!confirmOpen ? (
-          <button type="button" className="btn btn-primary" onClick={() => setConfirmOpen(true)}>
+          <button type="button" className="btn btn-primary btn-block btn-lg" onClick={() => setConfirmOpen(true)}>
             Confirmar solução
           </button>
         ) : (
-          <div>
+          <section className="confirm-box">
             <p>Revelar a solução para todos? Use quando a teoria falada estiver correta.</p>
-            <label>
+            <label className="field">
               Resumo opcional
               <input value={spokenSummary} onChange={(e) => setSpokenSummary(e.target.value)} maxLength={2000} />
             </label>
@@ -675,29 +583,71 @@ function NarratorView({
                 type="button"
                 className="btn btn-primary"
                 disabled={sending}
-                onClick={async () => {
-                  setSending(true)
-                  try {
+                onClick={() =>
+                  run(async () => {
                     await confirmSpoken(code, spokenSummary)
                     await refresh()
-                  } catch (e) {
-                    setMsg(e instanceof Error ? e.message : 'Erro')
-                  } finally {
-                    setSending(false)
-                  }
-                }}
+                  }, 'Erro ao revelar')
+                }
               >
                 Revelar agora
               </button>
             </div>
-          </div>
+          </section>
         )}
-      </section>
 
-      <section>
-        <h2 className="section-title">Histórico</h2>
-        <History questions={round.questions} theories={round.theories} />
-      </section>
+        <details className="fold">
+          <summary>Registrar pergunta oral</summary>
+          <p className="hint">
+            {room.mode === 'presencial'
+              ? 'Opcional — a conversa pode seguir só na voz.'
+              : 'Também útil se alguém perguntar fora do app.'}
+          </p>
+          <label className="field">
+            Resumo da pergunta
+            <input value={oralText} onChange={(e) => setOralText(e.target.value)} maxLength={280} />
+          </label>
+          <div className="answer-row" role="radiogroup" aria-label="Resposta">
+            {ANSWERS.map((a) => (
+              <button
+                key={a.value}
+                type="button"
+                role="radio"
+                aria-checked={oralAnswer === a.value}
+                className={`btn btn-answer sm ${a.className} ${oralAnswer === a.value ? 'is-selected' : ''}`}
+                onClick={() => setOralAnswer(a.value)}
+              >
+                {a.label}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="btn btn-outline btn-block"
+            disabled={sending || !oralText.trim()}
+            onClick={() =>
+              run(async () => {
+                await oralQuestion(code, oralText, oralAnswer, idemKey())
+                setOralText('')
+                await refresh()
+              }, 'Erro ao registrar')
+            }
+          >
+            Publicar com resposta
+          </button>
+        </details>
+      </div>
+
+      <div className="narrator-info">
+        {round.case ? <CaseCard c={round.case} /> : null}
+        <section className="room-side" aria-labelledby="hist-title">
+          <h2 id="hist-title" className="side-title">
+            Perguntas da sala
+          </h2>
+          <QuestionList questions={round.questions} theories={round.theories} />
+          <Participants people={room.participants} className="room-people" />
+        </section>
+      </div>
     </div>
   )
 }
@@ -709,27 +659,31 @@ function ResolvedView({
 }: {
   room: RoomSnapshot
   isNarrator: boolean
-  onLobby: () => Promise<void>
+  onLobby: () => Promise<unknown>
 }) {
   const round = room.round!
   return (
-    <div className="resolved">
-      <p className="eyebrow">Caso resolvido</p>
-      <h1>{round.case?.title}</h1>
-      {round.case ? <CaseCard c={round.case} revealed={round.revealedSolution} flip /> : null}
-      {round.acceptedTheory ? (
-        <section className="panel">
-          <h2>Teoria aceita</h2>
-          <p>{round.acceptedTheory}</p>
-        </section>
-      ) : null}
-      {isNarrator ? (
-        <button type="button" className="btn btn-primary" onClick={() => void onLobby()}>
-          Escolher outro caso
-        </button>
-      ) : (
-        <p className="hint">Aguardando o narrador para a próxima rodada.</p>
-      )}
+    <div className="room-grid resolved">
+      <div className="room-case">
+        {round.case ? <CaseCard c={round.case} revealed={round.revealedSolution} label="Caso resolvido" flip /> : null}
+      </div>
+      <section className="room-side">
+        <h2 className="side-title">Caso encerrado</h2>
+        {round.acceptedTheory ? (
+          <div className="accepted">
+            <span className="tag">Teoria aceita</span>
+            <p>{round.acceptedTheory}</p>
+          </div>
+        ) : null}
+        <QuestionList questions={round.questions} theories={[]} emptyText="Resolvido sem perguntas!" />
+        {isNarrator ? (
+          <button type="button" className="btn btn-primary btn-block btn-lg" onClick={() => void onLobby()}>
+            Escolher outro caso
+          </button>
+        ) : (
+          <p className="hint">Aguardando o narrador para a próxima rodada.</p>
+        )}
+      </section>
     </div>
   )
 }
