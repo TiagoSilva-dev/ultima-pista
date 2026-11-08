@@ -1,0 +1,21 @@
+# binaries / data
+/data/
+*.db
+*.db-*
+/bin/
+/server
+
+# frontend
+web/node_modules/
+web/dist/
+
+# env / IDE
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea/
+.vscode/
+
+# go
+/vendor/
